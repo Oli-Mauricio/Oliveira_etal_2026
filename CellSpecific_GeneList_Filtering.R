@@ -40,7 +40,9 @@ Raw_to_RPKM <- function(df_interest) {
 #
 # INSERT HERE ROUTINE TO CONVERT ALL SAMPLES INTO RPKM
 #
-#
+# Call samples in a for loop
+# Apply function
+# Return sample with name in Global Env
 
 RPKM.Camk2a_60min <- RPKM.Camk2a_60min %>%
   filter(rownames(RPKM.Camk2a_60min) %in% rownames(RPKM.Camk2a_15min)) %>%
