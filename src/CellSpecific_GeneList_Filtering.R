@@ -37,42 +37,49 @@ Raw_to_RPKM <- function(df_interest) {
   
 }
 
-#
-# INSERT HERE ROUTINE TO CONVERT ALL SAMPLES INTO RPKM
-#
-# Call samples in a for loop
-# Apply function
-# Return sample with name in Global Env
 
-RPKM.Camk2a_60min <- RPKM.Camk2a_60min %>%
-  filter(rownames(RPKM.Camk2a_60min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Camk2a_60min))
-RPKM.Pvalb_15min <- RPKM.Pvalb_15min %>%
-  filter(rownames(RPKM.Pvalb_15min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Pvalb_15min))
-RPKM.Pvalb_60min <- RPKM.Pvalb_60min %>%
-  filter(rownames(RPKM.Pvalb_60min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Pvalb_60min))
-RPKM.Sst_15min <- RPKM.Sst_15min %>%
-  filter(rownames(RPKM.Sst_15min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Sst_15min))
-RPKM.Sst_60min <- RPKM.Sst_60min %>%
-  filter(rownames(RPKM.Sst_60min) %in% rownames(RPKM.Camk2a_60min)) %>%
-  mutate(geneID = rownames(RPKM.Sst_60min)) 
-
-RPKM.Camk2a_15min$geneID <- rownames(RPKM.Camk2a_15min)
+#Iterate over all files, select count column and rename it. Then append to main data frame
+filelist <- list.files("D:\\Dropbox\\TRAP_Alt_Analysis\\FeatCounts", full.names = T)
+filelist <- filelist[!grepl("\\.summary$", filelist)]
 
 
-RPKM.df <- RPKM.Camk2a_15min %>%
-  inner_join(RPKM.Camk2a_60min, by = "geneID") %>%
-  inner_join(RPKM.Pvalb_15min, by = "geneID") %>%
-  inner_join(RPKM.Pvalb_60min, by = "geneID") %>%
-  inner_join(RPKM.Sst_15min, by = "geneID") %>%
-  inner_join(RPKM.Sst_60min, by = "geneID")
+all_data <- data.frame()
+for(file in filelist) {
+  
+  temp_file <- read.delim(file, comment.char = "#")
+  
+  temp_file <- temp_file[,c(1,7)]
+  
+  names(temp_file) <- c("gene_id", str_replace(names(temp_file[2]), "X.scratch.mm10349.files_salmon.", ""))
+  names(temp_file) <- c("gene_id", str_replace(names(temp_file[2]), "_S[0-9]+_L[0-9]+Aligned.sortedByCoord.out.bam", ""))
+  
+  if(length(all_data) == 0) {
+    
+    all_data <- temp_file
+    
+  } else {
+        
+        all_data <- all_data %>%
+          left_join(temp_file, by = "gene_id")
+        
+    }
+      
+}
 
-rownames(RPKM.df) <- RPKM.df$geneID
-RPKM.df <- dplyr::select(RPKM.df, -geneID)
+#Retrieve gene lengths, then convert to RPKM. Right now we will use all samples to identify purification efficiency
+FeatCount_Camk2a15min_TRAP_Box1_S1_L001 <- read.delim("D:/Dropbox/TRAP_Alt_Analysis/FeatCounts/FeatCount_Camk2a15min_TRAP_Box1_S1_L001", comment.char="#")
+gene.length <- dplyr::select(FeatCount_Camk2a15min_TRAP_Box1_S1_L001, Geneid, Length)
+rownames(all_data) <- all_data$gene_id
 
+all_data_rpkm <- Raw_to_RPKM(all_data)
+
+stopifnot(sum(is.na(all_data_rpkm)) == 0)
+
+hc.rpkm <- dplyr::select(all_data_rpkm, contains("HC"))
+
+# CURRENTLY THERE ARE ONLY TRAP SAMPLES, RETRIEVE THE OTHER ONES FROM BIGPURPLE INTO GREENE, RUN PIPELINE AND COLLECT THEM AS WELL
+
+#Create a data frame with the division between TRAP and TL for each sample in the dataset.
 RPKM.div.df <- data.frame(
   "HC1_Camk2a" = RPKM.df$HC_TRAP_Female2_C2 / RPKM.df$HC_TotLys_Female2_C2,
   "HC2_Camk2a" = RPKM.df$HC_TRAP_Male1_C2 / RPKM.df$HC_TotLys_Male1_C2,
