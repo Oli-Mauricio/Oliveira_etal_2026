@@ -12,14 +12,17 @@
 
 #
 
-library(edgeR)
-library(tidyverse)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(purrr)
+  library(edgeR)
+})
 
-Raw_to_RPKM <- function(df_interest) {
+Raw_to_RPKM <- function(df_interest, length_df) {
   
   df_interest <- as.data.frame(df_interest)
   
-  gene.length.temp <- gene.length %>% 
+  gene.length.temp <- length_df %>% 
     filter(Geneid %in% rownames(df_interest))
   
   df_interest <- df_interest %>% 
@@ -37,74 +40,107 @@ Raw_to_RPKM <- function(df_interest) {
   
 }
 
-#
-# INSERT HERE ROUTINE TO CONVERT ALL SAMPLES INTO RPKM
-#
-# Call samples in a for loop
-# Apply function
-# Return sample with name in Global Env
 
-RPKM.Camk2a_60min <- RPKM.Camk2a_60min %>%
-  filter(rownames(RPKM.Camk2a_60min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Camk2a_60min))
-RPKM.Pvalb_15min <- RPKM.Pvalb_15min %>%
-  filter(rownames(RPKM.Pvalb_15min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Pvalb_15min))
-RPKM.Pvalb_60min <- RPKM.Pvalb_60min %>%
-  filter(rownames(RPKM.Pvalb_60min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Pvalb_60min))
-RPKM.Sst_15min <- RPKM.Sst_15min %>%
-  filter(rownames(RPKM.Sst_15min) %in% rownames(RPKM.Camk2a_15min)) %>%
-  mutate(geneID = rownames(RPKM.Sst_15min))
-RPKM.Sst_60min <- RPKM.Sst_60min %>%
-  filter(rownames(RPKM.Sst_60min) %in% rownames(RPKM.Camk2a_60min)) %>%
-  mutate(geneID = rownames(RPKM.Sst_60min)) 
+clean_sample_name <- function(x) {
+  b <- basename(x)
+  
+  # Drop junk prefixes up to last dot before cell-type token
+  b <- sub("^.*\\.(?=(Camk2a|Pvalb|Sst))", "", b, perl = TRUE)
+  
+  # Capture "<CellTime>_(TL|TRAP)_<Group>(_<Extra>)?" before "_S<digits>"
+  m <- str_match(b, "((?:Camk2a|Pvalb|Sst)[^_]*_(?:TL|TRAP)_[^_]+(?:_[^_]+)?)_S\\d+")
+  if (!is.na(m[, 2])) return(m[, 2])
+  
+  # Fallback: trim typical suffixes
+  b <- sub("Aligned.*$", "", b)
+  b <- sub("\\.bam$", "", b)
+  b <- sub("_L\\d+.*$", "", b)
+  b
+}
 
-RPKM.Camk2a_15min$geneID <- rownames(RPKM.Camk2a_15min)
+read_fc_select <- function(fp, col7 = 7) {
+  # fread is much more forgiving than read.delim/read.table
+  dt <- read.delim(fp, comment.char = "#")
+  
+  if (!("Geneid" %in% names(dt))) {
+    stop(sprintf("File %s does not contain a 'Geneid' column.", fp))
+  }
+  if (ncol(dt) < col7) {
+    stop(sprintf("File %s has %d columns; cannot extract column %d.", fp, ncol(dt), col7))
+  }
+  
+  sample_nm <- clean_sample_name(names(dt)[col7])
+  
+  dt %>%
+    dplyr::select(Geneid, !!sample_nm := all_of(names(dt)[col7]))
+}
 
+# ----------------------------------------------------------------------------------
+# MAIN: READ FILES, CONVERT THEM INTO A SINGLE DATA FRAME, THEN CALCULATE ENRICHMENT
+# ----------------------------------------------------------------------------------
 
-RPKM.df <- RPKM.Camk2a_15min %>%
-  inner_join(RPKM.Camk2a_60min, by = "geneID") %>%
-  inner_join(RPKM.Pvalb_15min, by = "geneID") %>%
-  inner_join(RPKM.Pvalb_60min, by = "geneID") %>%
-  inner_join(RPKM.Sst_15min, by = "geneID") %>%
-  inner_join(RPKM.Sst_60min, by = "geneID")
+fc_dir   <- "C:\\Users\\mauri\\Dropbox\\TRAP_Alt_Analysis\\FeatCounts"
+fc_files <- sort(list.files(fc_dir, pattern = "\\.txt$|\\.tsv$|\\.tab$|L[0-9]+$", full.names = TRUE))
 
-rownames(RPKM.df) <- RPKM.df$geneID
-RPKM.df <- dplyr::select(RPKM.df, -geneID)
+# Read all files, stacking them on a list. Then transform them into a data frame using reduce
+count_list <- lapply(fc_files, function(f) {
+  tryCatch(
+    read_fc_select(f, col7 = 7),
+    error = function(e) {
+      message("\nFAILED on file:\n  ", f, "\nReason:\n  ", conditionMessage(e), "\n")
+      stop(e)
+    }
+  )
+})
 
+counts_wide <- reduce(count_list, inner_join, by = "Geneid")
+
+# Build length data frame to use in the conversion to RPKM.
+last_fp <- tail(fc_files, 1)
+last_df <- read.delim(
+  last_fp, 
+  comment.char = "#"
+)
+
+if (!all(c("Geneid", "Length") %in% names(last_df))) {
+  stop(sprintf("Last file (%s) does not contain both 'Geneid' and 'Length' columns.", last_fp))
+}
+
+length_df <- last_df %>% dplyr::select(Geneid, Length)
+
+#Conversion to RPKM
+rownames(counts_wide) <- counts_wide$Geneid
+RPKM.df <- Raw_to_RPKM(counts_wide[,-1], length_df)
+
+#Enrichment data frame. Divide the counts in TRAP fraction by the counts in TL fraction
 RPKM.div.df <- data.frame(
-  "HC1_Camk2a" = RPKM.df$HC_TRAP_Female2_C2 / RPKM.df$HC_TotLys_Female2_C2,
-  "HC2_Camk2a" = RPKM.df$HC_TRAP_Male1_C2 / RPKM.df$HC_TotLys_Male1_C2,
-  "HC3_Camk2a" = RPKM.df$HC_TRAP_Male2_C2 / RPKM.df$HC_TotLys_Male2_C2,
-  "HC4_Camk2a" = RPKM.df$FeatCount_HC2_TRAP_Camk2a1h_S13_L008 / RPKM.df$FeatCount_HC2_TL_Camk2a1h_S8_L008,
-  "HC5_Camk2a" = RPKM.df$FeatCount_HC3_TRAP_Camk2a1h_S14_L008 / RPKM.df$FeatCount_HC3_TL_Camk2a1h_S9_L008,
-  "HC6_Camk2a" = RPKM.df$FeatCount_HC4_TRAP_Camk2a1h_S18_L008 / RPKM.df$FeatCount_HC4_TL_Camk2a1h_S27_L008,
-  "HC7_Camk2a" = RPKM.df$FeatCount_HC5_TRAP_Camk2a1h_S19_L008 / RPKM.df$FeatCount_HC5_TL_Camk2a1h_S28_L008,
-  "HC8_Camk2a" = RPKM.df$FeatCount_HC6_TRAP_Camk2a1h_S20_L008 / RPKM.df$FeatCount_HC6_TL_Camk2a1h_S29_L008,
-  "HC1_Pvalb" = RPKM.df$HC_5_TRAP / RPKM.df$HC_5_TOTLYS,
-  "HC2_Pvalb" = RPKM.df$HC1_TRAP / RPKM.df$HC1_TOTLYS,
-  "HC3_Pvalb" = RPKM.df$HC3_TRAP / RPKM.df$HC3_TOTLYS,
-  "HC4_Pvalb" = RPKM.df$HC4_TRAP / RPKM.df$HC4_TOTLYS,
-  "HC5_Pvalb" = RPKM.df$HC1_TRAP_1h / RPKM.df$HC1_TOTLYS_1h,
-  "HC6_Pvalb" = RPKM.df$HC2_TRAP_1h / RPKM.df$HC2_TOTLYS_1h,
-  "HC7_Pvalb" = RPKM.df$HC3_TRAP_1h / RPKM.df$HC3_TOTLYS_1h,
-  "HC8_Pvalb" = RPKM.df$HC4_TRAP_1h / RPKM.df$HC4_TOTLYS_1h,
-  "HC9_Pvalb" = RPKM.df$HC5_TRAP_1h / RPKM.df$HC5_TOTLYS_1h,
-  "HC10_Pvalb" = RPKM.df$HC6_TRAP_1h / RPKM.df$HC6_TOTLYS_1h,
-  "HC11_Pvalb" = RPKM.df$HC7_TRAP_1h / RPKM.df$HC7_TOTLYS_1h,
-  "HC12_Pvalb" = RPKM.df$HC8_TRAP_1h / RPKM.df$HC8_TOTLYS_1h,
-  "HC1_Sst" = RPKM.df$FeatCount_HC1_TRAP_SST_S33_L003 / RPKM.df$FeatCount_HC1_TOTLYS_SST_S53_L003,
-  "HC2_Sst" = RPKM.df$FeatCount_HC2_TRAP_SST_S34_L003 / RPKM.df$FeatCount_HC2_TOTLYS_SST_S54_L003,
-  "HC3_Sst" = RPKM.df$FeatCount_HC3_TRAP_SST_S35_L003 / RPKM.df$FeatCount_HC3_TOTLYS_SST_S55_L003,
-  "HC4_Sst" = RPKM.df$FeatCount_HC4_TRAP_SST_S36_L003 / RPKM.df$FeatCount_HC4_TOTLYS_SST_S56_L003,
-  "HC5_Sst" = RPKM.df$FeatCount_HC5_TRAP_SST_S37_L003 / RPKM.df$FeatCount_HC5_TOTLYS_SST_S57_L003,
-  "HC6_Sst" = RPKM.df$FeatCount_HC6_TRAP_SST_S38_L003 / RPKM.df$FeatCount_HC6_TOTLYS_SST_S58_L003,
-  "HC7_Sst" = RPKM.df$FeatCount_HC7_TRAP_SST_S39_L003 / RPKM.df$FeatCount_HC7_TOTLYS_SST_S59_L003,
-  "HC8_Sst" = RPKM.df$`FeatCount_TRAP-HC2C1_S16_L006` / RPKM.df$`FeatCount_TL-HC2C1_S2_L006`,
-  "HC9_Sst" = RPKM.df$`FeatCount_TRAP-HC3C2_S23_L006` / RPKM.df$`FeatCount_TL-HC3C2_S9_L006`,
-  "HC10_Sst" = RPKM.df$HC1C3_TRAP / RPKM.df$HC1C3_TL,
-  "HC11_Sst" = RPKM.df$HC2C3_TRAP / RPKM.df$HC2C3_TL,
+  "HC1_Camk2a" = RPKM.df$Camk2a15min_TRAP_HC1 / RPKM.df$Camk2a15min_TL_HC1,
+  "HC2_Camk2a" = RPKM.df$Camk2a15min_TRAP_HC2 / RPKM.df$Camk2a15min_TL_HC2,
+  "HC3_Camk2a" = RPKM.df$Camk2a15min_TRAP_HC3 / RPKM.df$Camk2a15min_TL_HC3,
+  "HC4_Camk2a" = RPKM.df$Camk2a60min_TRAP_HC1 / RPKM.df$Camk2a60min_TL_HC1,
+  "HC5_Camk2a" = RPKM.df$Camk2a60min_TRAP_HC2 / RPKM.df$Camk2a60min_TL_HC2,
+  "HC6_Camk2a" = RPKM.df$Camk2a60min_TRAP_HC3 / RPKM.df$Camk2a60min_TL_HC3,
+  "HC7_Camk2a" = RPKM.df$Camk2a60min_TRAP_HC4 / RPKM.df$Camk2a60min_TL_HC4,
+  "HC1_Pvalb" = RPKM.df$Pvalb15min_TRAP_HC1 / RPKM.df$Pvalb15min_TL_HC1,
+  #HC2 included due to comparable marker expression, but not included for cell type-specific gene filtering.
+  #"HC2_Pvalb" = RPKM.df$Pvalb15min_TRAP_HC2 / 1, 
+  "HC3_Pvalb" = RPKM.df$Pvalb15min_TRAP_HC3 / RPKM.df$Pvalb15min_TL_HC3,
+  "HC4_Pvalb" = RPKM.df$Pvalb15min_TRAP_HC4 / RPKM.df$Pvalb15min_TL_HC4,
+  "HC5_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC1 / RPKM.df$Pvalb60min_TL_HC1,
+  "HC6_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC2 / RPKM.df$Pvalb60min_TL_HC2,
+  "HC7_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC3 / RPKM.df$Pvalb60min_TL_HC3,
+  "HC8_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC4 / RPKM.df$Pvalb60min_TL_HC4,
+  "HC9_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC5 / RPKM.df$Pvalb60min_TL_HC5,
+  "HC10_Pvalb" = RPKM.df$Pvalb60min_TRAP_HC6 / RPKM.df$Pvalb60min_TL_HC6,
+  "HC1_Sst" = RPKM.df$Sst15min_TRAP_HC1 / RPKM.df$Sst15min_TL_HC1,
+  "HC2_Sst" = RPKM.df$Sst15min_TRAP_HC2 / RPKM.df$Sst15min_TL_HC2,
+  "HC3_Sst" = RPKM.df$Sst15min_TRAP_HC3 / RPKM.df$Sst15min_TL_HC3,
+  "HC4_Sst" = RPKM.df$Sst15min_TRAP_HC4 / RPKM.df$Sst15min_TL_HC4,
+  "HC5_Sst" = RPKM.df$Sst60min_TRAP_HC1 / RPKM.df$Sst60min_TL_HC1,
+  "HC6_Sst" = RPKM.df$Sst60min_TRAP_HC2 / RPKM.df$Sst60min_TL_HC2,
+  "HC7_Sst" = RPKM.df$Sst60min_TRAP_HC3 / RPKM.df$Sst60min_TL_HC3,
+  "HC8_Sst" = RPKM.df$Sst60min_TRAP_HC4 / RPKM.df$Sst60min_TL_HC4,
+  "HC9_Sst" = RPKM.df$Sst60min_TRAP_HC5 / RPKM.df$Sst60min_TL_HC5,
   row.names = rownames(RPKM.df)
 )
 
@@ -115,22 +151,23 @@ RPKM.div.df[RPKM.div.df == "-Inf"] <- 0
 
 #
 ## Filter out non-enriched samples
-gene.markers <- c("Camk2a" ,"Pvalb", "Sst")
+gene.markers <- c("ENSMUSG00000024617.16" ,"ENSMUSG00000005716.16", "ENSMUSG00000004366.4")
 
-#
-# INSERT HERE ROUTINE THAT FINDS A COLUMN THAT HAS NO ENRICHMENT AND ELIMINATES IT.
-#
-#
+markers.df <- RPKM.div.df %>%
+  filter(rownames(RPKM.div.df) %in% gene.markers)
 
-RPKM.div.df <- RPKM.div.df[,-c(3,22,25,26,29)] #HC2,5, 6 and 9 in Sst and HC3 in Camk2a
+#Split the main dataset to filter gene names that are enriched in each cell type
 
-Filt.Camk2a <- RPKM.div.df %>% 
-  filter(rowSums(RPKM.div.df[,c(1:7)] >= 1.2) >= 3) # Camk2a samples
+Camk2a.df <- RPKM.div.df %>%
+  dplyr::select(contains("Camk2a")) %>%
+  filter(rowSums(. >= 1.2) >= 4)
 
-Filt.Pvalb <- RPKM.div.df %>%
-  filter(rowSums(RPKM.div.df[,c(8:19)] >= 1.2) >= 6) # Pvalb samples
+Pvalb.df <- RPKM.div.df %>%
+  dplyr::select(contains("Pvalb")) %>%
+  filter(rowSums(. >= 1.2) >= 6)
 
-Filt.Sst <- RPKM.div.df %>%
-  filter(rowSums(RPKM.div.df[,c(20:27)] >= 1.2) >= 4) # Sst samples
+Sst.df <- RPKM.div.df %>%
+  dplyr::select(contains("Sst")) %>%
+  filter(rowSums(. >= 1.2) >= 6)
 
-save(Filt.Camk2a, Filt.Pvalb, Filt.Sst, file = "Filtered_gene_cell_Specific.RData")
+save(Camk2a.df, Pvalb.df, Sst.df, file = "Filtered_gene_cell_Specific.RData")
