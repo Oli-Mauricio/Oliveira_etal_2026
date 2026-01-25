@@ -6,6 +6,7 @@ suppressPackageStartupMessages({
   library(rtracklayer)
   library(ggrepel)
   library(ggpubr)
+  library(tibble)
 })
 
 #FIGURE 1 - CELL TYPE-SPECIFIC TRANSLATOME#####
@@ -61,17 +62,9 @@ plotPCA(normalized_db_TRAP_all, intgroup = c("Neuron_type")) +
         panel.grid = element_blank()) 
 
 
-#THIS ONE NEEDS TO BE FIXED
-#FIG 1D
-##CELL MARKERS PLOT
-suppressPackageStartupMessages({
-  library(rtracklayer)
-  library(dplyr)
-  library(tibble)
-  library(tidyr)
-  library(stringr)
-  library(ggplot2)
-})
+# -------------------------------------------------------------------------
+# CELL MARKERS PLOT
+# -------------------------------------------------------------------------
 
 gtf_path <- "C:\\Users\\mauri\\Dropbox\\rMATS_AS_translatome project\\gencode.vM25.annotation.gtf"
 
