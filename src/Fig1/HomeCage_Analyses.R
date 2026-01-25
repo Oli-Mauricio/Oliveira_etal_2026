@@ -3,6 +3,9 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(stringr)
   library(ggplot2)
+  library(rtracklayer)
+  library(ggrepel)
+  library(ggpubr)
 })
 
 #FIGURE 1 - CELL TYPE-SPECIFIC TRANSLATOME#####
@@ -61,42 +64,80 @@ plotPCA(normalized_db_TRAP_all, intgroup = c("Neuron_type")) +
 #THIS ONE NEEDS TO BE FIXED
 #FIG 1D
 ##CELL MARKERS PLOT
-markers.df <- RPKM.div.df %>%
-  filter(rownames(RPKM.div.df) %in% c("Camk2a", "Slc17a7",
-                                      "Gad1", "Gad2", "Syt2",
-                                      "Pvalb", "Sst", "Aldh1l1",
-                                      "Gfap", "Cnp", "Cx3cr1"))
-markers.df$geneID <- rownames(markers.df)
-gather.df <- gather(markers.df, key = "sample", value = "normalized RPKM", HC1_Camk2a:HC11_Sst)
-gather.df$geneID <- factor(gather.df$geneID, levels = c("Camk2a", "Slc17a7",
-                                                        "Gad1", "Gad2", "Syt2",
-                                                        "Pvalb", "Sst", "Aldh1l1",
-                                                        "Gfap", "Cnp", "Cx3cr1"))
-gather.df$`Cell type` <- str_replace(gather.df$sample, "^.*_", "")
+suppressPackageStartupMessages({
+  library(rtracklayer)
+  library(dplyr)
+  library(tibble)
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+})
 
-ggplot(
-  gather.df, aes(`Cell type`, log2(`normalized RPKM`), 
-                 fill = `Cell type`)) + 
+gtf_path <- "C:\\Users\\mauri\\Dropbox\\rMATS_AS_translatome project\\gencode.vM25.annotation.gtf"
+
+# 1) Build mapping table from GTF
+gtf <- rtracklayer::import(gtf_path)
+
+gene_map <- as.data.frame(gtf) %>%
+  filter(type == "gene") %>%
+  transmute(
+    Geneid    = as.character(gene_id),
+    gene_name = as.character(gene_name)
+  ) %>%
+  distinct() %>%
+  filter(!is.na(Geneid), !is.na(gene_name))
+
+# If your rownames look like ENSMUSG... .xx, strip version so it matches GTF gene_id
+strip_ensembl_version <- function(x) sub("\\.[0-9]+$", "", x)
+
+marker_genes <- c(
+  "Camk2a", "Slc17a7",
+  "Gad1", "Gad2", "Syt2",
+  "Pvalb", "Sst", "Aldh1l1",
+  "Gfap", "Cnp", "Cx3cr1"
+)
+
+# 2) Convert rownames (Ensembl) -> symbols, then plot as before
+markers.df <- RPKM.div.df %>%
+  rownames_to_column("Geneid") %>%
+  left_join(gene_map, by = "Geneid") %>%
+  filter(gene_name %in% marker_genes)
+
+# 3) Long format (tidyr instead of gather)
+gather.df <- markers.df %>%
+  pivot_longer(
+    cols = HC1_Camk2a:HC9_Sst,
+    names_to = "sample",
+    values_to = "normalized_RPKM"
+  ) %>%
+  mutate(
+    geneID = factor(gene_name, levels = marker_genes),
+    `Cell type` = str_replace(sample, "^.*_", "")
+  )
+
+ggplot(gather.df, aes(`Cell type`, log2(normalized_RPKM), fill = `Cell type`)) + 
   geom_boxplot(linewidth = 0.8) + 
   geom_point() +
-  geom_hline(yintercept = 0, size = 1) +
+  geom_hline(yintercept = 0, linewidth = 1) +
   scale_fill_manual(values = c("#b1c6d9","#008631","#ffecec")) + 
-  ylab(label="log2(RPKM TRAP /\n RPKM Total")+
+  ylab("log2(RPKM TRAP /\n RPKM Total)") +
   scale_y_continuous(breaks = seq(-8, 8, by = 2)) +
-  facet_wrap(.~ geneID, nrow = 2) + 
+  facet_wrap(~ geneID, nrow = 2) + 
   theme_bw() + 
-  theme(axis.title.y = element_text(size = 24),
-        axis.title.x = element_blank(),
-        axis.text.y = element_text(size=24),
-        axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        legend.position = "top",
-        legend.title = element_text(size = 24),
-        legend.text = element_text(size = 24),
-        strip.text = element_text(size = 22),
-        strip.background = element_blank(),
-        panel.grid = element_blank()
+  theme(
+    axis.title.y = element_text(size = 24),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size=24),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "top",
+    legend.title = element_text(size = 24),
+    legend.text = element_text(size = 24),
+    strip.text = element_text(size = 22),
+    strip.background = element_blank(),
+    panel.grid = element_blank()
   )
+
 
 
 # -----------------------------------------------------------------------
