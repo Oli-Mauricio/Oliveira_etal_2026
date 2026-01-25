@@ -1,5 +1,9 @@
-library(tidyverse)
-library(DESeq2)
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+})
 
 #FIGURE 1 - CELL TYPE-SPECIFIC TRANSLATOME#####
 #Fig 1E
@@ -7,12 +11,25 @@ library(DESeq2)
 ##PCA of all genes enriched in neurons
 #first get a full list of all genes identified as enriched in all cell types
 load("Filtered_gene_cell_Specific.RData")
-all_genes <- c(rownames(Filt.Camk2a), rownames(Filt.Pvalb), rownames(Filt.Sst))
+all_genes <- c(rownames(Camk2a.df), rownames(Pvalb.df), rownames(Sst.df))
 all_genes <- unique(all_genes)
 
-load("All_samples_HC_TRAP.RData")
-All.HC.samples <- All.HC.samples %>% 
-  filter( rownames(All.HC.samples) %in% all_genes)
+#Prepare counts data frame only with Home Cage samples
+load("All_counts.RData")
+All.HC.samples <- counts_wide %>% 
+  dplyr::select(Geneid, contains("TRAP")) %>%
+  dplyr::select(Geneid, contains("HC")) %>%
+  filter(Geneid %in% all_genes) %>%
+  dplyr::distinct(Geneid, .keep_all = TRUE)
+rownames(All.HC.samples) <- All.HC.samples$Geneid
+All.HC.samples <- dplyr::select(All.HC.samples, -Geneid)
+
+#Prepare Metadata for DESeq2 run
+Metadata_df <- data.frame(
+  samples = names(All.HC.samples),
+  Neuron_type = str_replace(names(All.HC.samples), "[0-9]+min_TRAP_HC[0-9]$", ""),
+  row.names = names(All.HC.samples)
+)  
 
 my_database_TRAP_all <- DESeqDataSetFromMatrix(countData = as.matrix(All.HC.samples),
                                                colData = Metadata_df,
@@ -40,6 +57,8 @@ plotPCA(normalized_db_TRAP_all, intgroup = c("Neuron_type")) +
         legend.position = "bottom",
         panel.grid = element_blank()) 
 
+
+#THIS ONE NEEDS TO BE FIXED
 #FIG 1D
 ##CELL MARKERS PLOT
 markers.df <- RPKM.div.df %>%
@@ -79,66 +98,90 @@ ggplot(
         panel.grid = element_blank()
   )
 
-##GENERATION OF DESEQ2 OBJECTS AND DIFFERENTIAL EXPRESSION
-#Camk2a vs PV
-my_database_TRAP_all <- DESeq(my_database_TRAP_all)
-Results_Camk2avsPvalb <- results(my_database_TRAP_all, 
-                                 contrast = c("Neuron_type", "Camk2a", "Pvalb"), 
-                                 alpha = 0.05, 
-                                 cooksCutoff = F, 
-                                 independentFiltering = F)
 
-My_results_all_TRAP_annotated.Camk2avsPV <- data.frame(Results_Camk2avsPvalb) 
-Camk2a_Pvalb_sig <- subset(My_results_all_TRAP_annotated.Camk2avsPV, padj < 0.05)
-Camk2a_Pvalb_sig <- Camk2a_Pvalb_sig %>%
-  arrange(padj)
+# -----------------------------------------------------------------------
+# PRODUCTION OF HOME CAGE DESEQ2 OBJECT
+# -----------------------------------------------------------------------
 
-#Camk2a vs Sst
-my_database_TRAP_all <- DESeq(my_database_TRAP_all)
-Results_Camk2avsSst <- results(my_database_TRAP_all, 
-                               contrast = c("Neuron_type", "Camk2a", "Sst"), 
-                               alpha = 0.05, 
-                               cooksCutoff = F, 
-                               independentFiltering = F)
+run_pairwise_neuron_type_results <- function(dds,
+                                             neuron_col = "Neuron_type",
+                                             alpha = 0.05,
+                                             cooksCutoff = FALSE,
+                                             independentFiltering = FALSE) {
+  # Make sure the factor exists and is a factor
+  stopifnot(neuron_col %in% colnames(colData(dds)))
+  colData(dds)[[neuron_col]] <- factor(colData(dds)[[neuron_col]])
+  
+  # Fit model once
+  dds <- DESeq(dds)
+  
+  # Levels present (e.g., Camk2a, Pvalb, Sst)
+  lvls <- levels(colData(dds)[[neuron_col]])
+  lvls <- lvls[lvls %in% unique(as.character(colData(dds)[[neuron_col]]))]  # keep used levels
+  
+  # All pairwise combinations
+  pairs <- combn(lvls, 2, simplify = FALSE)
+  
+  # Store results here
+  res_list <- list()
+  
+  for (p in pairs) {
+    a <- p[1]
+    b <- p[2]
+    
+    # Name like "Camk2a_vs_Pvalb"
+    nm <- paste0(a, "_vs_", b)
+    
+    res <- results(
+      dds,
+      contrast = c(neuron_col, a, b),
+      alpha = alpha,
+      cooksCutoff = cooksCutoff,
+      independentFiltering = independentFiltering
+    )
+    
+    # Full, unfiltered table; keep Geneid as a column for easy joins later
+    res_df <- as.data.frame(res) %>%
+      rownames_to_column("Geneid") %>%
+      arrange(padj)
+    
+    res_list[[nm]] <- res_df
+  }
+  
+  list(dds = dds, results = res_list, neuron_levels = lvls)
+}
 
-My_results_all_TRAP_annotated.Camk2avsSst <- data.frame(Results_Camk2avsSst) 
-Camk2a_Sst_sig <- subset(My_results_all_TRAP_annotated.Camk2avsSst, padj < 0.05)
-Camk2a_Sst_sig <- Camk2a_Sst_sig %>%
-  arrange(padj)
 
-#PV vs Sst
-my_database_TRAP_all <- DESeq(my_database_TRAP_all)
-Results_PvalbvsSst <- results(my_database_TRAP_all, 
-                              contrast = c("Neuron_type", "Pvalb", "Sst"), 
-                              alpha = 0.05, 
-                              cooksCutoff = F, 
-                              independentFiltering = F)
+out_HC <- run_pairwise_neuron_type_results(
+  dds = my_database_TRAP_all,
+  neuron_col = "Neuron_type",
+  alpha = 0.05,
+  cooksCutoff = FALSE,
+  independentFiltering = FALSE
+)
 
-My_results_all_TRAP_annotated.PV.Sst <- data.frame(Results_PvalbvsSst) 
-Pvalb_Sst_sig <- subset(My_results_all_TRAP_annotated.PV.Sst, padj < 0.05)
-Pvalb_Sst_sig <- Pvalb_Sst_sig %>%
-  arrange(padj)
+# Your results list:
+# out_HC$results$Camk2a_vs_Pvalb
+# out_HC$results$Camk2a_vs_Sst
+# out_HC$results$Pvalb_vs_Sst
 
 
-
-
-#Fig 1F
 #-------------------------------------------------------------------------------
-#
-
-load("Filtered_gene_cell_Specific.RData")
-
-df <- list(Camk2a = rownames(Filt.Camk2a),
-           Pvalb = rownames(Filt.Pvalb),
-           Sst = rownames(Filt.Sst))
+# VENN DIAGRAM OF HOME CAGE SAMPLES
+#-------------------------------------------------------------------------------
 
 
-attributes(df) <- list(names = names(df), 
-                       row.names = 1:6724, 
+Venn_df <- list(Camk2a = rownames(Camk2a.df),
+           Pvalb = rownames(Pvalb.df),
+           Sst = rownames(Sst.df))
+
+
+attributes(Venn_df) <- list(names = names(Venn_df), 
+                       row.names = 1:7000, #Random number much larger than the total number of a cell type-specific gene list 
                        class = 'data.frame')
 
 #Venn diagram
-ggVennDiagram(df, label_alpha = 0, 
+ggVennDiagram(Venn_df, label_alpha = 0, 
               set_color = "midnightblue", 
               label_size = 8,
               label_percent_digit = 1,
@@ -146,41 +189,44 @@ ggVennDiagram(df, label_alpha = 0,
   scale_fill_gradient(low = "#F4FAFE", 
                       high = "#4981BF")
 
-#Fig 1G
-#-------------------------------------------------------------------------------
-#
-#Find common genes for DEG analysis
-common_genes <- Reduce(intersect, list(rownames(Filt.Camk2a),
-                                       rownames(Filt.Pvalb),
-                                       rownames(Filt.Sst)))
+# ------------------------------------------
+# COMPARISON OF CAMK2A-TO-INTERNEURON DEGs 
+# ------------------------------------------
 
-common.Camk2a.Pvalb <- My_results_all_TRAP_annotated.Camk2avsPV %>% 
-  filter(rownames(My_results_all_TRAP_annotated.Camk2avsPV) %in% common_genes)
+common_genes <- Reduce(intersect, list(rownames(Camk2a.df),
+                                       rownames(Pvalb.df),
+                                       rownames(Sst.df)))
 
-common.Camk2a.Sst <- My_results_all_TRAP_annotated.Camk2avsSst %>% 
-  filter(rownames(My_results_all_TRAP_annotated.Camk2avsSst) %in% common_genes)
+res_Camk2a_vs_Pvalb <- out_HC$results$Camk2a_vs_Pvalb
+res_Camk2a_vs_Sst   <- out_HC$results$Camk2a_vs_Sst
+res_Pvalb_vs_Sst    <- out_HC$results$Pvalb_vs_Sst
 
-common.Pvalb.Sst <- My_results_all_TRAP_annotated.PV.Sst %>% 
-  filter(rownames(My_results_all_TRAP_annotated.PV.Sst) %in% common_genes)
+df.final <- tibble(Geneid = common_genes) %>%
+  left_join(
+    res_Camk2a_vs_Pvalb %>% select(Geneid, Camk2avsPV = log2FoldChange),
+    by = "Geneid"
+  ) %>%
+  left_join(
+    res_Camk2a_vs_Sst %>% select(Geneid, Camk2avsSst = log2FoldChange),
+    by = "Geneid"
+  ) %>%
+  left_join(
+    res_Pvalb_vs_Sst %>% select(Geneid, padj_PvalbvsSst = padj),
+    by = "Geneid"
+  ) %>%
+  mutate(
+    sig_PvalbvsSst = if_else(!is.na(padj_PvalbvsSst) & padj_PvalbvsSst < 0.05, "yes", "no")
+  )
 
-
-df.final <- data.frame("Camk2avsPV" = common.Camk2a.Pvalb$log2FoldChange, 
-                       "Camk2avsSst" = common.Camk2a.Sst$log2FoldChange, 
-                       row.names = rownames(common.Camk2a.Pvalb))
-
-df.final <- df.final %>% 
-  mutate(sig_PvalbvsSst = case_when(rownames(df.final) %in% rownames(Pvalb_Sst_sig) ~ "yes", 
-                                    TRUE ~ "no"))
-
-
+gene.markers <- c("ENSMUSG00000024617.16" ,"ENSMUSG00000005716.16", "ENSMUSG00000004366.4")
 
 ggplot(df.final, aes(Camk2avsPV, Camk2avsSst)) + 
   geom_point(data = df.final, aes(fill = sig_PvalbvsSst), size = 3, shape = 21) + 
   scale_fill_manual(values = c("yes" = "darkblue", "no" = "gray")) +
-  geom_smooth(method = 'lm', colour = "black", size = 1, alpha = 0.2) +
+  geom_smooth(method = 'lm', colour = "black", linewidth = 1, alpha = 0.2) +
   geom_vline(xintercept = 0, linetype = "dashed", linewidth = 1) +
   geom_hline(yintercept = 0, linetype = "dashed", linewidth = 1) +
-  xlim(c(-15,15)) + ylim (c(-15,15)) +
+  xlim(c(-3,3)) + ylim (c(-3,3)) +
   xlab(label = "log2FC - Camk2a/Pvalb") + ylab(label = "log2FC - Camk2a/Sst") +
   theme_classic() +
   theme(axis.title.x = element_text(size = 20),
@@ -190,7 +236,7 @@ ggplot(df.final, aes(Camk2avsPV, Camk2avsSst)) +
         legend.text = element_text(size = 18),
         legend.title = element_text(size = 18),
         legend.position = "bottom") +
-  stat_cor(method = "spearman", size = 6, label.x = -15, label.y = 12, cor.coef.name = "rho") +
-  geom_label_repel(aes(label = ifelse(row.names(df.final) %in% c("Sst", "Pvalb"), row.names(df.final), '')),
+  stat_cor(method = "spearman", size = 7, label.x = -3, label.y = 2.5, cor.coef.name = "rho") +
+  geom_label_repel(aes(label = ifelse(Geneid %in% gene.markers, row.names(df.final), '')),
                    max.overlaps = Inf, box.padding = 1
   )
