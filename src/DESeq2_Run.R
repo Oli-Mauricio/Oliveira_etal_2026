@@ -3,7 +3,12 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(stringr)
   library(ggplot2)
+  library(rstudioapi)
+  library(tidyverse)
 })
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
 
 #----------------------------
 # Helpers
@@ -51,7 +56,7 @@ run_deseq_for_subset <- function(count_df, cell_type, timepoint) {
   meta <- bind_rows(lapply(sample_cols, parse_sample_info)) %>%
     filter(tech == "TRAP") %>%                        # safety; should already be TRAP
     mutate(condition = factor(condition, levels = c("HC", "Box", "Shock"))) %>%
-    mutate(condition_number = case_when(condition = "HC" ~ 0, condition = "Box" ~ 1, condition = "Shock" ~ 2)) %>%
+    mutate(condition_number = case_when(condition == "HC" ~ 0, condition == "Box" ~ 1, condition == "Shock" ~ 2)) %>%
     column_to_rownames("sample")
   
   # 3) build count matrix
@@ -120,6 +125,8 @@ run_deseq_for_subset <- function(count_df, cell_type, timepoint) {
 # Main driver
 #----------------------------
 
+load("All_SampleCounts.RData")
+
 # Identify which (cell_type, timepoint) combos exist in your TRAP columns
 trap_cols <- colnames(counts_wide) %>%
   setdiff("Geneid") %>%
@@ -147,3 +154,39 @@ for (i in seq_len(nrow(trap_meta))) {
 # out$Camk2a$`15min`$results$Shock_vs_HC
 # out$Camk2a$`15min`$pca  (a ggplot object you can print)
 out
+
+
+# Keep ONLY DE results (and optionally meta / pca)
+extract_results_only <- function(out, keep_meta = TRUE, keep_pca = FALSE) {
+  res_only <- list()
+  
+  for (ct in names(out)) {
+    res_only[[ct]] <- list()
+    for (tp in names(out[[ct]])) {
+      
+      x <- out[[ct]][[tp]]
+      
+      res_only[[ct]][[tp]] <- list(
+        results = x$results
+      )
+      
+      if (keep_meta && !is.null(x$meta)) {
+        # meta can include rownames; store as plain column
+        res_only[[ct]][[tp]]$meta <- tibble::rownames_to_column(
+          as.data.frame(x$meta), var = "sample"
+        )
+      }
+      
+      if (keep_pca && !is.null(x$pca)) {
+        res_only[[ct]][[tp]]$pca <- x$pca
+      }
+    }
+  }
+  
+  res_only
+}
+
+out_results <- extract_results_only(out, keep_meta = TRUE, keep_pca = FALSE)
+
+# Save compactly (RDS compresses well)
+save(out_results, file = "DESeq2_results.RData")

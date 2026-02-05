@@ -16,7 +16,10 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(purrr)
   library(edgeR)
+  library(rstudioapi)
 })
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 Raw_to_RPKM <- function(df_interest, length_df) {
   
@@ -94,7 +97,7 @@ count_list <- lapply(fc_files, function(f) {
 })
 
 counts_wide <- purrr::reduce(count_list, inner_join, by = "Geneid")
-save(counts_wide, file = "All_counts.RData")
+save(counts_wide, file = "All_SampleCounts.RData")
 
 # Build length data frame to use in the conversion to RPKM.
 last_fp <- tail(fc_files, 1)

@@ -1,3 +1,14 @@
+#####
+
+# THINGS TO DO
+# 1) ADD A LOAD OF CAMK2A.DF, PVALB.DF AND SST.DF - CREATE FILE IN THE REPO
+# 2) RE-INSTALL DEVTOOLS AND THEN RTOOLS 4.4
+# 3) INSTALL ANRICHMENT
+
+#####
+
+
+
 # ============================================================
 # WGCNA from DESeq2-VST + Cytoscape export (clean functional form)
 # Keeps your original parameter values the same.
