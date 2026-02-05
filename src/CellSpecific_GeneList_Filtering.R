@@ -93,7 +93,7 @@ count_list <- lapply(fc_files, function(f) {
   )
 })
 
-counts_wide <- reduce(count_list, inner_join, by = "Geneid")
+counts_wide <- purrr::reduce(count_list, inner_join, by = "Geneid")
 save(counts_wide, file = "All_counts.RData")
 
 # Build length data frame to use in the conversion to RPKM.
